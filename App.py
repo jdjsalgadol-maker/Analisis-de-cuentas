@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 import datetime
+import calendar
 
 # ── 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS ─────────────────────────────────
 st.set_page_config(
@@ -127,14 +128,10 @@ if archivo_cargado is not None:
         if df.empty:
             st.warning("⚠️ No hay datos para los filtros seleccionados.")
             st.stop()
-        
-        fecha_corte = 20
-        dias_totales_mayo = 31
-        dias_restantes = dias_totales_mayo - fecha_corte
-        
+            
         venta_base_real = df['Valor'].sum()
-        promedio_diario_real = venta_base_real / (len(df['Fecha'].unique()) if len(df['Fecha'].unique()) > 0 else 1)
         
+        # Inteligencia de Volatilidad (Silenciosa)
         df_diario = df.groupby('Fecha')['Valor'].sum()
         if len(df_diario) > 1:
             media_v = df_diario.mean()
@@ -143,7 +140,6 @@ if archivo_cargado is not None:
             vol_sugerida = max(0.05, min(0.40, vol_historica_real)) 
         else:
             vol_sugerida = 0.15
-            
         volatilidad = vol_sugerida
 
         # ── EXTRACCIÓN DE VARIABLES DEL MES ACTUAL Y ANTERIOR ──
@@ -189,25 +185,34 @@ if archivo_cargado is not None:
         if col_b3.button("🦅 Cierre de Periodo (Año Completo)", use_container_width=True):
             st.session_state.horizonte = "Año Completo"
 
-        # ── 6. ALGORITMO PREDICTIVO DINÁMICO (Crecimiento Compuesto) ─────────────
+        # ── 6. ALGORITMO PREDICTIVO DINÁMICO REESCRITO (LÓGICA CORREGIDA) ────────
+        fecha_maxima = df['Fecha'].max()
+        dia_actual = fecha_maxima.day
+        mes_maximo = fecha_maxima.month
+        año_maximo = fecha_maxima.year
+        dias_totales_mes = calendar.monthrange(año_maximo, mes_maximo)[1]
+        dias_restantes = dias_totales_mes - dia_actual
+        
+        # Promedio diario ajustado única y exclusivamente al ritmo del mes en curso
+        promedio_diario_actual = suma_mes_actual / dia_actual if dia_actual > 0 else 0
+        media_diaria_ajustada = promedio_diario_actual * factor_sel
+
         np.random.seed(42)
         simulaciones = 1000
-        media_diaria_ajustada = promedio_diario_real * factor_sel
         tasa_crecimiento_mensual = (factor_sel - 1.0) / 2 if factor_sel != 1.0 else 0.015 
         
         if st.session_state.horizonte == "Mes Actual":
-            # Proyección neta solo para los días restantes del mes actual
+            # Proyección solo para los días que faltan para acabar el mes
             sim_remanente = np.random.normal(loc=media_diaria_ajustada, scale=abs(media_diaria_ajustada) * volatilidad, size=(dias_restantes, simulaciones))
             remanente_estimado = np.percentile(sim_remanente.sum(axis=0), 50)
             
             kpi4_valor = suma_mes_actual + remanente_estimado
             datos_futuros_linea = [kpi4_valor]
-            eje_futuro = ['Cierre Estimado Mes']
+            eje_futuro = ['Cierre Mes']
             tit_graf = f"Tendencia Histórica y Cierre Estimado ({escenario})"
             
         elif st.session_state.horizonte == "Trimestre":
-            # Proyección neta solo para los próximos 3 meses
-            dias_por_mes = [30, 31, 31]
+            dias_por_mes = [30, 30, 30] # Aproximación para los siguientes 3 meses
             eje_futuro = ['Mes +1', 'Mes +2', 'Mes +3']
             datos_futuros_linea = []
             kpi4_valor = 0
@@ -223,17 +228,22 @@ if archivo_cargado is not None:
             tit_graf = f"Proyección de Valor Mensual: Próximo Trimestre ({escenario})"
             
         else:
-            # Año Completo: Suma del año actual acumulado + proyección de meses restantes
-            dias_por_mes = [30, 31, 31, 30, 31, 30, 31] # Meses aprox restantes
-            eje_futuro = ['Mes +1', 'Mes +2', 'Mes +3', 'Mes +4', 'Mes +5', 'Mes +6', 'Mes +7']
+            # Año Completo: Lo que va del AÑO EN CURSO + lo que falta para llegar a diciembre
+            meses_restantes = 12 - mes_maximo
+            suma_año_actual_historico = df[df['Año'] == año_maximo]['Valor'].sum()
+            
+            # Estimamos los días restantes del mes actual
+            sim_remanente = np.random.normal(loc=media_diaria_ajustada, scale=abs(media_diaria_ajustada) * volatilidad, size=(dias_restantes, simulaciones))
+            remanente_estimado = np.percentile(sim_remanente.sum(axis=0), 50)
+            proyeccion_futura_año = remanente_estimado
+            
             datos_futuros_linea = []
+            eje_futuro = []
             
-            año_max = df['Año'].max()
-            suma_año_actual_historico = df[df['Año'] == año_max]['Valor'].sum()
-            
-            proyeccion_futura_año = 0
-            
-            for i, dias in enumerate(dias_por_mes):
+            # Estimamos los meses completos que faltan del año
+            for i in range(meses_restantes):
+                eje_futuro.append(f"Mes +{i+1}")
+                dias = 30
                 factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
                 media_mes = media_diaria_ajustada * dias * factor_mes
                 sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
@@ -242,6 +252,11 @@ if archivo_cargado is not None:
                 proyeccion_futura_año += mediana_mes
                 
             kpi4_valor = suma_año_actual_historico + proyeccion_futura_año
+            
+            if meses_restantes == 0:
+                eje_futuro = ['Cierre Mes']
+                datos_futuros_linea = [suma_mes_actual + remanente_estimado]
+                
             tit_graf = f"Proyección Mensual: Cierre de Año Completo ({escenario})"
 
         # ── RENDERIZADO DE KPIs (TARJETAS) ──
@@ -252,11 +267,11 @@ if archivo_cargado is not None:
         m1, m2, m3, m4 = st.columns(4)
         
         with m1:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">💰 MES ANTERIOR</p><p class="metric-value">${suma_mes_anterior:,.0f}</p><p class="metric-sub">Suma del mes anterior</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">💰 ACUMULADO REAL</p><p class="metric-value">${venta_base_real:,.0f}</p><p class="metric-sub">Neto histórico filtrado</p></div>', unsafe_allow_html=True)
         with m2:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">📅 SUMA MES ACTUAL</p><p class="metric-value">${suma_mes_actual:,.0f}</p><p class="metric-sub">Último mes registrado</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">📅 SUMA MES ACTUAL</p><p class="metric-value">${suma_mes_actual:,.0f}</p><p class="metric-sub">Corte al día {dia_actual}</p></div>', unsafe_allow_html=True)
         with m3:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">⚖️ VS MES ANTERIOR</p><p class="metric-value" style="color:{color_tendencia};">${diferencia_mes:,.0f}</p><p class="metric-sub">{icono_tendencia} {pct_diferencia:+.1f}% de variación</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">⚖️ VS MES ANTERIOR</p><p class="metric-value" style="color:{color_tendencia};">${diferencia_mes:,.0f}</p><p class="metric-sub">{icono_tendencia} {pct_diferencia:+.1f}% vs Mes Pasado</p></div>', unsafe_allow_html=True)
         with m4:
             st.markdown(f'<div class="metric-card"><p class="metric-label">🚀 ESTIMADO PROYECTADO</p><p class="metric-value">${kpi4_valor:,.0f}</p><p class="metric-sub">Periodo: {st.session_state.horizonte}</p></div>', unsafe_allow_html=True)
 
@@ -270,12 +285,11 @@ if archivo_cargado is not None:
             'Ene 2', 'Feb 2', 'Mar 2', 'Abr 2', 'Mes Actual'
         ]
         
-        # Ajustamos el histórico de la gráfica para que aterrice exactamente en el Mes Actual real
         np.random.seed(42)
-        base_historica = suma_mes_actual * 0.85 if suma_mes_actual != 0 else promedio_diario_real * 30
+        base_historica = suma_mes_actual * 0.85 if suma_mes_actual != 0 else promedio_diario_actual * 30
         factores_crecimiento = np.linspace(0.85, 1.15, 16)
         valores_historicos = [base_historica * f * np.random.uniform(0.9, 1.1) for f in factores_crecimiento]
-        valores_historicos.append(suma_mes_actual) # El histórico conecta perfecto con la realidad
+        valores_historicos.append(suma_mes_actual) 
         
         df_historico = pd.DataFrame({'Periodo': meses_historicos, 'Venta': valores_historicos})
 
@@ -286,7 +300,7 @@ if archivo_cargado is not None:
         valores_proyeccion = [df_historico['Venta'].iloc[-1]] + datos_futuros_linea
         
         color_linea = "#e74c3c" if factor_sel < 1.0 else "#27ae60"
-        ax.plot(eje_proyeccion, valores_proyeccion, label=f"Proyección ({escenario})", color=color_linea, linestyle="--", marker='s', linewidth=3)
+        ax.plot(eje_proyeccion, valores_proyeccion, label=f"Proyección Mensual ({escenario})", color=color_linea, linestyle="--", marker='s', linewidth=3)
         
         margen_error = np.array(datos_futuros_linea) * volatilidad
         ax.fill_between(eje_futuro, np.array(datos_futuros_linea) - margen_error, np.array(datos_futuros_linea) + margen_error, color=color_linea, alpha=0.15)

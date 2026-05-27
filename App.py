@@ -78,7 +78,7 @@ if archivo_cargado is not None:
         else:
             df = pd.read_csv(archivo_cargado)
         
-        # Mapeo estricto basado en las columnas solicitadas (índices: A=0, B=1, C=2...)
+      # Mapeo estricto basado en las columnas solicitadas (índices: A=0, B=1, C=2...)
         try:
             col_banco = df.columns[1]   # Columna B: Banco
             col_fecha = df.columns[3]   # Columna D: Fecha

@@ -7,7 +7,7 @@ import datetime
 
 # ── 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS ─────────────────────────────────
 st.set_page_config(
-    page_title="Analisis de cuentas",
+    page_title="Suite de Análisis de Cuentas",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -73,31 +73,34 @@ with st.sidebar:
 # ── 4. PROCESAMIENTO CENTRAL Y FILTROS ───────────────────────────────────────
 if archivo_cargado is not None:
     try:
+        # 1. Lectura robusta para Excel y CSV (con comas o punto y coma)
         if archivo_cargado.name.endswith('.xlsx'):
             df = pd.read_excel(archivo_cargado)
         else:
-            df = pd.read_csv(archivo_cargado)
+            try:
+                df = pd.read_csv(archivo_cargado)
+                if len(df.columns) < 11:
+                    archivo_cargado.seek(0)
+                    df = pd.read_csv(archivo_cargado, sep=';')
+            except Exception:
+                archivo_cargado.seek(0)
+                df = pd.read_csv(archivo_cargado, sep=';')
         
-      # Mapeo estricto basado en las columnas solicitadas (índices: A=0, B=1, C=2...)
+        # 2. Extracción estricta por posición (índices: B=1, D=3, H=7, K=10)
         try:
-            col_banco = df.columns[1]   # Columna B: Banco
-            col_fecha = df.columns[3]   # Columna D: Fecha
-            col_valor = df.columns[7]   # Columna H: Valor neto
-            col_cuenta = df.columns[10] # Columna K: Cuenta
+            df = df.iloc[:, [1, 3, 7, 10]].copy()
+            df.columns = ['Banco', 'Fecha', 'Valor', 'Cuenta']
         except IndexError:
-            st.error("⚠️ El archivo no tiene las columnas necesarias. Se requiere información hasta la columna K.")
+            st.error(f"⚠️ El archivo tiene solo {len(df.columns)} columnas. Necesita llegar hasta la columna K (11 columnas mínimo).")
+            st.info("💡 Vista previa de cómo el sistema está leyendo tu archivo:")
+            st.write(df.head(2))
             st.stop()
             
-        df = df.rename(columns={
-            col_fecha: 'Fecha',
-            col_valor: 'Valor',
-            col_banco: 'Banco',
-            col_cuenta: 'Cuenta'
-        })
-            
+        # 3. Limpieza de datos
         df['Valor'] = df['Valor'].apply(limpiar_valores_moneda)
+        df = df.dropna(subset=['Banco', 'Cuenta'], how='all') # Limpiar filas vacías
         
-        # ── NUEVO: FILTROS DINÁMICOS POR BANCO Y CUENTA ──
+        # ── FILTROS DINÁMICOS POR BANCO Y CUENTA ──
         with st.sidebar:
             st.markdown('<p class="section-header">🔍 Filtros de Análisis</p>', unsafe_allow_html=True)
             
@@ -107,18 +110,18 @@ if archivo_cargado is not None:
             cuentas_unicas = sorted(df['Cuenta'].dropna().astype(str).unique().tolist())
             cuentas_sel = st.multiselect("💳 Selecciona Cuenta(s):", cuentas_unicas, default=cuentas_unicas)
             
-        # Aplicar los filtros seleccionados al DataFrame central
-        df = df[df['Banco'].isin(bancos_sel) & df['Cuenta'].isin(cuentas_sel)]
+        # Aplicar filtros
+        df = df[df['Banco'].astype(str).isin(bancos_sel) & df['Cuenta'].astype(str).isin(cuentas_sel)]
         
         if df.empty:
-            st.warning("⚠️ No hay datos para los filtros seleccionados. Intenta ampliar la selección.")
+            st.warning("⚠️ No hay datos para los filtros seleccionados. Amplía tu selección en la barra lateral.")
             st.stop()
         
         fecha_corte = 20
         dias_totales_mayo = 31
         dias_restantes = dias_totales_mayo - fecha_corte
         
-        # La suma total de "Valor" agrupa y netea automáticamente positivos y negativos
+        # Valor neto filtrado
         venta_mayo_real = df['Valor'].sum()
         promedio_diario_real = venta_mayo_real / fecha_corte
         
@@ -133,7 +136,7 @@ if archivo_cargado is not None:
             vol_historica_real = 0.15
             vol_sugerida = 0.15
 
-        # ── CONSTRUCCIÓN DINÁMICA DE LA BARRA LATERAL ──
+        # ── CONSTRUCCIÓN DINÁMICA DE LA BARRA LATERAL (ESCENARIOS) ──
         with st.sidebar:
             st.success("¡Datos procesados exitosamente!")
             st.markdown('<p class="section-header">🚀 Escenarios del Modelo</p>', unsafe_allow_html=True)
@@ -157,7 +160,7 @@ if archivo_cargado is not None:
         factor_sel = factores[escenario]
 
         # ── 5. SELECCIÓN DE HORIZONTES DE PROYECCIÓN ─────────────────────────────
-        st.markdown("### 🔮 Elige el Horizonte de la Proyección @JuanS")
+        st.markdown("### 🔮 Elige el Horizonte de la Proyección")
         col_b1, col_b2, col_b3 = st.columns(3)
         
         if 'horizonte' not in st.session_state:
@@ -179,7 +182,7 @@ if archivo_cargado is not None:
         tasa_crecimiento_mensual = (factor_sel - 1.0) / 2 if factor_sel != 1.0 else 0.015 
         
         if st.session_state.horizonte == "Mes Actual":
-            sim_remanente = np.random.normal(loc=media_diaria_ajustada, scale=media_diaria_ajustada * volatilidad, size=(dias_restantes, simulaciones))
+            sim_remanente = np.random.normal(loc=media_diaria_ajustada, scale=abs(media_diaria_ajustada) * volatilidad, size=(dias_restantes, simulaciones))
             ventas_proyectadas_sim = venta_mayo_real + sim_remanente.sum(axis=0)
             
             tit_graf = f"Tendencia Histórica y Cierre Estimado de Mayo 2026 ({escenario})"
@@ -196,13 +199,13 @@ if archivo_cargado is not None:
                 factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
                 media_mes = media_diaria_ajustada * dias * factor_mes
                 
-                sim_mes = np.random.normal(loc=media_mes / dias, scale=(media_mes / dias) * volatilidad, size=(dias, simulaciones))
+                sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
                 mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
                 datos_futuros_linea.append(mediana_mes)
                 venta_acumulada_kpi += mediana_mes
             
-            ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=venta_acumulada_kpi * volatilidad, size=simulaciones)
-            tit_graf = f"Proyección de Venta Neta Mensual: Próximo Trimestre ({escenario})"
+            ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=abs(venta_acumulada_kpi) * volatilidad, size=simulaciones)
+            tit_graf = f"Proyección de Valor Neto Mensual: Próximo Trimestre ({escenario})"
             
         else:
             dias_por_mes = [30, 31, 31, 30, 31, 30, 31]
@@ -214,12 +217,12 @@ if archivo_cargado is not None:
                 factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
                 media_mes = media_diaria_ajustada * dias * factor_mes
                 
-                sim_mes = np.random.normal(loc=media_mes / dias, scale=(media_mes / dias) * volatilidad, size=(dias, simulaciones))
+                sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
                 mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
                 datos_futuros_linea.append(mediana_mes)
                 venta_acumulada_kpi += mediana_mes
                 
-            ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=venta_acumulada_kpi * volatilidad, size=simulaciones)
+            ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=abs(venta_acumulada_kpi) * volatilidad, size=simulaciones)
             tit_graf = f"Proyección Mensual: Cierre de Periodo Anual 2026 ({escenario})"
 
         p10 = np.percentile(ventas_proyectadas_sim, 10)
@@ -229,7 +232,7 @@ if archivo_cargado is not None:
         st.write(f"**Análisis Activo:** {st.session_state.horizonte} bajo el modelo estructural **{escenario}**")
         m1, m2, m3, m4 = st.columns(4)
         with m1:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">💰 ACUMULADO REAL (AL 20 MAYO)</p><p class="metric-value">${venta_mayo_real:,.0f}</p><p class="metric-sub">Neto filtrado</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">💰 ACUMULADO REAL</p><p class="metric-value">${venta_mayo_real:,.0f}</p><p class="metric-sub">Neto filtrado</p></div>', unsafe_allow_html=True)
         with m2:
             st.markdown(f'<div class="metric-card"><p class="metric-label">📉 TOTAL CONSERVADOR (P10)</p><p class="metric-value">${p10:,.0f}</p><p class="metric-sub">Acumulado del periodo</p></div>', unsafe_allow_html=True)
         with m3:
@@ -256,7 +259,7 @@ if archivo_cargado is not None:
         df_historico = pd.DataFrame({'Periodo': meses_historicos, 'Venta': valores_historicos})
 
         fig_lineas, ax = plt.subplots(figsize=(16, 6))
-        ax.plot(df_historico['Periodo'], df_historico['Venta'], label="Histórico Mensual Real", color="#1c3d5a", marker='o', linewidth=2.5)
+        ax.plot(df_historico['Periodo'], df_historico['Venta'], label="Histórico Mensual Estimado", color="#1c3d5a", marker='o', linewidth=2.5)
         
         eje_proyeccion = [df_historico['Periodo'].iloc[-1]] + eje_futuro
         valores_proyeccion = [df_historico['Venta'].iloc[-1]] + datos_futuros_linea
@@ -303,16 +306,18 @@ if archivo_cargado is not None:
                         bbox=bbox_style)
 
         ax.set_title(tit_graf, fontsize=14, fontweight='bold', color="#1a2744")
-        ax.set_ylabel("Valor Neto Segmentado ($)")
+        ax.set_ylabel("Valor Neto Proyectado ($)")
         ax.grid(True, linestyle=':', alpha=0.5)
         
         ax.set_xticks(range(len(total_ticks)))
         ax.set_xticklabels(total_ticks, rotation=45, ha='right', fontsize=10)
         
-        margen_superior = max(max(valores_historicos), max(datos_futuros_linea)) * 1.2
-        ax.set_ylim(bottom=0, top=margen_superior)
+        # Ajuste para valores netos negativos o positivos
+        margen_superior = max(max(valores_historicos + [0]), max(datos_futuros_linea + [0])) * 1.2
+        margen_inferior = min(min(valores_historicos + [0]), min(datos_futuros_linea + [0])) * 1.2
+        ax.set_ylim(bottom=margen_inferior, top=margen_superior)
         
-        ax.legend(loc="lower right", fontsize=10)
+        ax.legend(loc="upper left", fontsize=10)
         plt.tight_layout()
         st.pyplot(fig_lineas)
 
@@ -340,11 +345,12 @@ if archivo_cargado is not None:
         with c_izq:
             st.write("### 🔲 Matriz ABC (Concentración por Cuenta)")
             df_clientes = df.groupby('Cuenta')['Valor'].sum().reset_index()
-            df_clientes = df_clientes.sort_values(by='Valor', ascending=False).reset_index(drop=True)
+            # Ordenar por el valor absoluto para clasificar la concentración adecuadamente
+            df_clientes = df_clientes.sort_values(by='Valor', ascending=False, key=abs).reset_index(drop=True)
             
-            total_cartera = df_clientes['Valor'].sum()
+            total_cartera = abs(df_clientes['Valor']).sum()
             if total_cartera > 0:
-                df_clientes['% Participación'] = (df_clientes['Valor'] / total_cartera) * 100
+                df_clientes['% Participación'] = (abs(df_clientes['Valor']) / total_cartera) * 100
                 df_clientes['% Acumulado'] = df_clientes['% Participación'].cumsum()
                 df_clientes['Clasificación'] = df_clientes['% Acumulado'].apply(lambda x: 'Clase A (Crítico)' if x <= 80 else ('Clase B (Medio)' if x <= 95 else 'Clase C (Cola)'))
             else:
@@ -362,13 +368,13 @@ if archivo_cargado is not None:
             st.write("### 🏦 Comportamiento por Banco (Top 10)")
             
             df_tv_completo = df.groupby('Banco')['Valor'].sum().reset_index()
-            df_tv_completo = df_tv_completo.sort_values(by='Valor', ascending=False)
+            df_tv_completo = df_tv_completo.sort_values(by='Valor', ascending=False, key=abs)
             
             top_n = 10
             if len(df_tv_completo) > top_n:
                 df_top = df_tv_completo.iloc[:top_n].copy()
                 valor_otros = df_tv_completo.iloc[top_n:]['Valor'].sum()
-                df_otros = pd.DataFrame({'Banco': ['OTROS BANCOS MENORES'], 'Valor': [valor_otros]})
+                df_otros = pd.DataFrame({'Banco': ['OTROS BANCOS'], 'Valor': [valor_otros]})
                 df_tv = pd.concat([df_top, df_otros], ignore_index=True)
             else:
                 df_tv = df_tv_completo.copy()
@@ -376,10 +382,10 @@ if archivo_cargado is not None:
             df_tv = df_tv.sort_values(by='Valor', ascending=True)
             
             fig_barras, ax_bar = plt.subplots(figsize=(8, 5.5))
-            colores = ['#95a5a6' if x == 'OTROS BANCOS MENORES' else '#34495e' for x in df_tv['Banco']]
+            colores = ['#95a5a6' if x == 'OTROS BANCOS' else ('#e74c3c' if val < 0 else '#34495e') for x, val in zip(df_tv['Banco'], df_tv['Valor'])]
             
             ax_bar.barh(df_tv['Banco'], df_tv['Valor'], color=colores, edgecolor="#2c3e50", height=0.6)
-            ax_bar.set_title(f"Concentración de Valores por Banco", fontsize=12, fontweight='bold', color="#1a2744")
+            ax_bar.set_title(f"Concentración de Valores Netos por Banco", fontsize=12, fontweight='bold', color="#1a2744")
             ax_bar.grid(True, axis='x', linestyle='--', alpha=0.4)
             plt.subplots_adjust(left=0.35)
             st.pyplot(fig_barras)
@@ -454,4 +460,4 @@ if archivo_cargado is not None:
     except Exception as e:
         st.error(f"Error procesando el flujo del simulador: {e}")
 else:
-    st.info("👋 Sube tu archivo base 'Comparativo cuentas.xlsx' en la barra lateral para procesar los datos.")
+    st.info("👋 Sube tu archivo base en la barra lateral para procesar los datos.")

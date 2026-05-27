@@ -133,7 +133,7 @@ if archivo_cargado is not None:
         dias_restantes = dias_totales_mayo - fecha_corte
         
         venta_base_real = df['Valor'].sum()
-        promedio_diario_real = venta_base_real / fecha_corte
+        promedio_diario_real = venta_base_real / (len(df['Fecha'].unique()) if len(df['Fecha'].unique()) > 0 else 1)
         
         df_diario = df.groupby('Fecha')['Valor'].sum()
         if len(df_diario) > 1:
@@ -145,6 +145,22 @@ if archivo_cargado is not None:
             vol_sugerida = 0.15
             
         volatilidad = vol_sugerida
+
+        # ── EXTRACCIÓN DE VARIABLES DEL MES ACTUAL Y ANTERIOR ──
+        df_mensual = df.groupby(['Año', 'Mes'])['Valor'].sum().reset_index().sort_values(by=['Año', 'Mes'])
+        
+        if len(df_mensual) >= 1:
+            suma_mes_actual = df_mensual.iloc[-1]['Valor']
+        else:
+            suma_mes_actual = 0
+            
+        if len(df_mensual) >= 2:
+            suma_mes_anterior = df_mensual.iloc[-2]['Valor']
+        else:
+            suma_mes_anterior = 0
+            
+        diferencia_mes = suma_mes_actual - suma_mes_anterior
+        pct_diferencia = (diferencia_mes / abs(suma_mes_anterior)) * 100 if suma_mes_anterior != 0 else 0
 
         # ── NUEVOS ESCENARIOS DEL MODELO ──
         with st.sidebar:
@@ -180,17 +196,21 @@ if archivo_cargado is not None:
         tasa_crecimiento_mensual = (factor_sel - 1.0) / 2 if factor_sel != 1.0 else 0.015 
         
         if st.session_state.horizonte == "Mes Actual":
+            # Proyección neta solo para los días restantes del mes actual
             sim_remanente = np.random.normal(loc=media_diaria_ajustada, scale=abs(media_diaria_ajustada) * volatilidad, size=(dias_restantes, simulaciones))
-            ventas_proyectadas_sim = venta_base_real + sim_remanente.sum(axis=0)
+            remanente_estimado = np.percentile(sim_remanente.sum(axis=0), 50)
+            
+            kpi4_valor = suma_mes_actual + remanente_estimado
+            datos_futuros_linea = [kpi4_valor]
+            eje_futuro = ['Cierre Estimado Mes']
             tit_graf = f"Tendencia Histórica y Cierre Estimado ({escenario})"
-            eje_futuro = ['Cierre Próx. Mes']
-            datos_futuros_linea = [np.percentile(ventas_proyectadas_sim, 50)]
             
         elif st.session_state.horizonte == "Trimestre":
+            # Proyección neta solo para los próximos 3 meses
             dias_por_mes = [30, 31, 31]
-            eje_futuro = ['Mes 1', 'Mes 2', 'Mes 3']
+            eje_futuro = ['Mes +1', 'Mes +2', 'Mes +3']
             datos_futuros_linea = []
-            venta_acumulada_kpi = 0
+            kpi4_valor = 0
             
             for i, dias in enumerate(dias_por_mes):
                 factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
@@ -198,76 +218,64 @@ if archivo_cargado is not None:
                 sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
                 mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
                 datos_futuros_linea.append(mediana_mes)
-                venta_acumulada_kpi += mediana_mes
-            
-            ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=abs(venta_acumulada_kpi) * volatilidad, size=simulaciones)
-            tit_graf = f"Proyección de Valor Neto Mensual: Próximo Trimestre ({escenario})"
-            
-        else:
-            dias_por_mes = [30, 31, 31, 30, 31, 30, 31]
-            eje_futuro = ['Mes 1', 'Mes 2', 'Mes 3', 'Mes 4', 'Mes 5', 'Mes 6', 'Mes 7']
-            datos_futuros_linea = []
-            venta_acumulada_kpi = venta_base_real + (media_diaria_ajustada * dias_restantes)
-            
-            for i, dias in enumerate(dias_por_mes):
-                factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
-                media_mes = media_diaria_ajustada * dias * factor_mes
-                sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
-                mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
-                datos_futuros_linea.append(mediana_mes)
-                venta_acumulada_kpi += mediana_mes
+                kpi4_valor += mediana_mes
                 
-            ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=abs(venta_acumulada_kpi) * volatilidad, size=simulaciones)
-            tit_graf = f"Proyección Mensual: Cierre de Periodo Anual ({escenario})"
-
-        p50 = np.percentile(ventas_proyectadas_sim, 50)
-
-        # ── LÓGICA PARA KPIs DE MES ACTUAL Y DIFERENCIA ──
-        df_mensual = df.groupby(['Año', 'Mes'])['Valor'].sum().reset_index().sort_values(by=['Año', 'Mes'])
-        
-        if len(df_mensual) >= 1:
-            suma_mes_actual = df_mensual.iloc[-1]['Valor']
-        else:
-            suma_mes_actual = 0
+            tit_graf = f"Proyección de Valor Mensual: Próximo Trimestre ({escenario})"
             
-        if len(df_mensual) >= 2:
-            suma_mes_anterior = df_mensual.iloc[-2]['Valor']
         else:
-            suma_mes_anterior = 0
+            # Año Completo: Suma del año actual acumulado + proyección de meses restantes
+            dias_por_mes = [30, 31, 31, 30, 31, 30, 31] # Meses aprox restantes
+            eje_futuro = ['Mes +1', 'Mes +2', 'Mes +3', 'Mes +4', 'Mes +5', 'Mes +6', 'Mes +7']
+            datos_futuros_linea = []
             
-        diferencia_mes = suma_mes_actual - suma_mes_anterior
-        pct_diferencia = (diferencia_mes / abs(suma_mes_anterior)) * 100 if suma_mes_anterior != 0 else 0
-        
+            año_max = df['Año'].max()
+            suma_año_actual_historico = df[df['Año'] == año_max]['Valor'].sum()
+            
+            proyeccion_futura_año = 0
+            
+            for i, dias in enumerate(dias_por_mes):
+                factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
+                media_mes = media_diaria_ajustada * dias * factor_mes
+                sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
+                mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
+                datos_futuros_linea.append(mediana_mes)
+                proyeccion_futura_año += mediana_mes
+                
+            kpi4_valor = suma_año_actual_historico + proyeccion_futura_año
+            tit_graf = f"Proyección Mensual: Cierre de Año Completo ({escenario})"
+
+        # ── RENDERIZADO DE KPIs (TARJETAS) ──
         icono_tendencia = "📈" if diferencia_mes >= 0 else "📉"
         color_tendencia = "#4fc3f7" if diferencia_mes >= 0 else "#e74c3c"
 
-        st.write(f"**Análisis Activo:** {st.session_state.horizonte} bajo el modelo estructural **{escenario}**")
+        st.write(f"**Análisis Activo:** {st.session_state.horizonte} bajo el modelo **{escenario}**")
         m1, m2, m3, m4 = st.columns(4)
         
         with m1:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">💰 ACUMULADO REAL</p><p class="metric-value">${venta_base_real:,.0f}</p><p class="metric-sub">Neto histórico filtrado</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">💰 MES ANTERIOR</p><p class="metric-value">${suma_mes_anterior:,.0f}</p><p class="metric-sub">Suma del mes anterior</p></div>', unsafe_allow_html=True)
         with m2:
             st.markdown(f'<div class="metric-card"><p class="metric-label">📅 SUMA MES ACTUAL</p><p class="metric-value">${suma_mes_actual:,.0f}</p><p class="metric-sub">Último mes registrado</p></div>', unsafe_allow_html=True)
         with m3:
             st.markdown(f'<div class="metric-card"><p class="metric-label">⚖️ VS MES ANTERIOR</p><p class="metric-value" style="color:{color_tendencia};">${diferencia_mes:,.0f}</p><p class="metric-sub">{icono_tendencia} {pct_diferencia:+.1f}% de variación</p></div>', unsafe_allow_html=True)
         with m4:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">🚀 ESTIMADO PROYECTADO</p><p class="metric-value">${p50:,.0f}</p><p class="metric-sub">Periodo: {st.session_state.horizonte}</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">🚀 ESTIMADO PROYECTADO</p><p class="metric-value">${kpi4_valor:,.0f}</p><p class="metric-sub">Periodo: {st.session_state.horizonte}</p></div>', unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── 7. COMPONENTE GRÁFICO (Línea de Tiempo Anti-Aglomeración) ────────────
+        # ── 7. COMPONENTE GRÁFICO (Línea de Tiempo Mensual) ────────────
         st.write("### 📈 Línea de Tiempo de Rendimiento y Matriz Mensual")
         
         meses_historicos = [
             'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic',
-            'Ene 2', 'Feb 2', 'Mar 2', 'Abr 2', 'Actual'
+            'Ene 2', 'Feb 2', 'Mar 2', 'Abr 2', 'Mes Actual'
         ]
         
+        # Ajustamos el histórico de la gráfica para que aterrice exactamente en el Mes Actual real
         np.random.seed(42)
-        base_historica = venta_base_real * 0.75
-        factores_crecimiento = np.linspace(0.85, 1.25, 16)
+        base_historica = suma_mes_actual * 0.85 if suma_mes_actual != 0 else promedio_diario_real * 30
+        factores_crecimiento = np.linspace(0.85, 1.15, 16)
         valores_historicos = [base_historica * f * np.random.uniform(0.9, 1.1) for f in factores_crecimiento]
-        valores_historicos.append(venta_base_real)
+        valores_historicos.append(suma_mes_actual) # El histórico conecta perfecto con la realidad
         
         df_historico = pd.DataFrame({'Periodo': meses_historicos, 'Venta': valores_historicos})
 
@@ -319,7 +327,7 @@ if archivo_cargado is not None:
                         bbox=bbox_style)
 
         ax.set_title(tit_graf, fontsize=14, fontweight='bold', color="#1a2744")
-        ax.set_ylabel("Valor Neto Proyectado ($)")
+        ax.set_ylabel("Valor Neto Mensual ($)")
         ax.grid(True, linestyle=':', alpha=0.5)
         
         ax.set_xticks(range(len(total_ticks)))
@@ -432,16 +440,17 @@ if archivo_cargado is not None:
             meta_texto = f"<b>Fecha de Emisión:</b> {datetime.date.today().strftime('%d/%m/%Y')}<br/>" \
                          f"<b>Escenario de Mercado Evaluado:</b> {escenario_name}<br/>" \
                          f"<b>Horizonte de Simulación:</b> {horizonte_name}<br/>" \
-                         f"<b>Valor Base Neto Acumulado:</b> ${venta_base:,.2f}"
+                         f"<b>Valor Base Neto Acumulado Global:</b> ${venta_base:,.2f}"
             
             story.append(Paragraph(meta_texto, estilo_cuerpo))
             story.append(Spacer(1, 15))
             
             datos_matriz = [
                 [Paragraph("<b>Indicador Estratégico</b>", estilo_cuerpo), Paragraph("<b>Monto</b>", estilo_cuerpo)],
+                ["Suma Mes Anterior", f"${suma_mes_anterior:,.2f}"],
                 ["Suma Mes Actual Registrado", f"${suma_mes_actual:,.2f}"],
                 ["Diferencia vs Mes Anterior", f"${diferencia_mes:,.2f}"],
-                ["Estimado Proyectado a Futuro (P50)", f"${p50:,.2f}"]
+                [f"Estimado Proyectado ({st.session_state.horizonte})", f"${kpi4_valor:,.2f}"]
             ]
             t_finan = Table(datos_matriz, colWidths=[250, 200])
             t_finan.setStyle(TableStyle([

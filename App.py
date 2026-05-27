@@ -73,7 +73,6 @@ with st.sidebar:
 # ── 4. PROCESAMIENTO CENTRAL Y FILTROS ───────────────────────────────────────
 if archivo_cargado is not None:
     try:
-        # 1. Lectura robusta para Excel y CSV (con comas o punto y coma)
         if archivo_cargado.name.endswith('.xlsx'):
             df = pd.read_excel(archivo_cargado)
         else:
@@ -86,48 +85,38 @@ if archivo_cargado is not None:
                 archivo_cargado.seek(0)
                 df = pd.read_csv(archivo_cargado, sep=';')
         
-        # 2. Extracción estricta por posición (índices: B=1, D=3, H=7, K=10)
         try:
             df = df.iloc[:, [1, 3, 7, 10]].copy()
             df.columns = ['Banco', 'Fecha', 'Valor', 'Cuenta']
         except IndexError:
             st.error(f"⚠️ El archivo tiene solo {len(df.columns)} columnas. Necesita llegar hasta la columna K (11 columnas mínimo).")
-            st.info("💡 Vista previa de cómo el sistema está leyendo tu archivo:")
-            st.write(df.head(2))
             st.stop()
             
-        # 3. Limpieza de datos y Fechas
         df['Valor'] = df['Valor'].apply(limpiar_valores_moneda)
-        df = df.dropna(subset=['Banco', 'Cuenta'], how='all') # Limpiar filas vacías
+        df = df.dropna(subset=['Banco', 'Cuenta'], how='all')
         
-        # Convertir Fecha a datetime para poder extraer el Año
         df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
-        df = df.dropna(subset=['Fecha']) # Quitamos filas que no tengan una fecha válida
+        df = df.dropna(subset=['Fecha']) 
         df['Año'] = df['Fecha'].dt.year.astype(int)
+        df['Mes'] = df['Fecha'].dt.month.astype(int)
         
-        # ── NUEVOS FILTROS DINÁMICOS (LISTAS DESPLEGABLES Y AÑOS) ──
         with st.sidebar:
             st.markdown('<p class="section-header">🔍 Filtros de Análisis</p>', unsafe_allow_html=True)
             
-            # Filtro Principal: Cuenta (Desplegable)
             cuentas_unicas = ['TODAS'] + sorted(df['Cuenta'].dropna().astype(str).unique().tolist())
             cuenta_sel = st.selectbox("💳 Selecciona Cuenta (Filtro Principal):", cuentas_unicas)
             
-            # Filtro Secundario: Banco (Desplegable)
             bancos_unicos = ['TODOS'] + sorted(df['Banco'].dropna().astype(str).unique().tolist())
             banco_sel = st.selectbox("🏦 Selecciona Banco:", bancos_unicos)
             
-            # Filtro de Tiempo: Slider de Años (Reemplaza a la volatilidad manual)
             min_anio = int(df['Año'].min())
             max_anio = int(df['Año'].max())
             
-            # Prevenir error si solo hay 1 año en la base de datos
             if min_anio == max_anio:
                 rango_anios = st.slider("📅 Periodo de Años a analizar:", min_value=min_anio-1, max_value=max_anio, value=(min_anio, max_anio))
             else:
                 rango_anios = st.slider("📅 Periodo de Años a analizar:", min_value=min_anio, max_value=max_anio, value=(min_anio, max_anio))
             
-        # ── APLICAR FILTROS AL DATAFRAME ──
         if cuenta_sel != 'TODAS':
             df = df[df['Cuenta'] == cuenta_sel]
         if banco_sel != 'TODOS':
@@ -136,18 +125,16 @@ if archivo_cargado is not None:
         df = df[(df['Año'] >= rango_anios[0]) & (df['Año'] <= rango_anios[1])]
         
         if df.empty:
-            st.warning("⚠️ No hay datos para los filtros seleccionados. Intenta seleccionar 'TODAS' o ampliar el rango de años.")
+            st.warning("⚠️ No hay datos para los filtros seleccionados.")
             st.stop()
         
         fecha_corte = 20
         dias_totales_mayo = 31
         dias_restantes = dias_totales_mayo - fecha_corte
         
-        # Valor neto filtrado
         venta_base_real = df['Valor'].sum()
         promedio_diario_real = venta_base_real / fecha_corte
         
-        # ── CÁLCULO INTELIGENTE DE VOLATILIDAD HISTÓRICA (CV) SILENCIOSO ──
         df_diario = df.groupby('Fecha')['Valor'].sum()
         if len(df_diario) > 1:
             media_v = df_diario.mean()
@@ -155,23 +142,21 @@ if archivo_cargado is not None:
             vol_historica_real = (desv_v / media_v) if media_v > 0 else 0.15
             vol_sugerida = max(0.05, min(0.40, vol_historica_real)) 
         else:
-            vol_historica_real = 0.15
             vol_sugerida = 0.15
             
-        # Asignamos la volatilidad calculada automáticamente sin mostrar el slider
         volatilidad = vol_sugerida
 
-        # ── CONSTRUCCIÓN DINÁMICA DE LA BARRA LATERAL (ESCENARIOS) ──
+        # ── NUEVOS ESCENARIOS DEL MODELO ──
         with st.sidebar:
             st.success("¡Datos procesados exitosamente!")
             st.markdown('<p class="section-header">🚀 Escenarios del Modelo</p>', unsafe_allow_html=True)
             escenario = st.radio(
                 "Selecciona la variación del mercado:",
-                ("Pesimista (-10%)", "Base (100%)", "Optimista (+10%)", "Alto Crecimiento (+20%)"),
+                ("Estimado (-10%)", "Base (100%)", "Crecimiento (+10%)"),
                 index=1
             )
 
-        factores = {"Pesimista (-10%)": 0.90, "Base (100%)": 1.00, "Optimista (+10%)": 1.10, "Alto Crecimiento (+20%)": 1.20}
+        factores = {"Estimado (-10%)": 0.90, "Base (100%)": 1.00, "Crecimiento (+10%)": 1.10}
         factor_sel = factores[escenario]
 
         # ── 5. SELECCIÓN DE HORIZONTES DE PROYECCIÓN ─────────────────────────────
@@ -192,14 +177,11 @@ if archivo_cargado is not None:
         np.random.seed(42)
         simulaciones = 1000
         media_diaria_ajustada = promedio_diario_real * factor_sel
-        
-        # Tasa de crecimiento orgánico mensual
         tasa_crecimiento_mensual = (factor_sel - 1.0) / 2 if factor_sel != 1.0 else 0.015 
         
         if st.session_state.horizonte == "Mes Actual":
             sim_remanente = np.random.normal(loc=media_diaria_ajustada, scale=abs(media_diaria_ajustada) * volatilidad, size=(dias_restantes, simulaciones))
             ventas_proyectadas_sim = venta_base_real + sim_remanente.sum(axis=0)
-            
             tit_graf = f"Tendencia Histórica y Cierre Estimado ({escenario})"
             eje_futuro = ['Cierre Próx. Mes']
             datos_futuros_linea = [np.percentile(ventas_proyectadas_sim, 50)]
@@ -213,7 +195,6 @@ if archivo_cargado is not None:
             for i, dias in enumerate(dias_por_mes):
                 factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
                 media_mes = media_diaria_ajustada * dias * factor_mes
-                
                 sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
                 mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
                 datos_futuros_linea.append(mediana_mes)
@@ -231,7 +212,6 @@ if archivo_cargado is not None:
             for i, dias in enumerate(dias_por_mes):
                 factor_mes = (1 + tasa_crecimiento_mensual) ** (i + 1)
                 media_mes = media_diaria_ajustada * dias * factor_mes
-                
                 sim_mes = np.random.normal(loc=media_mes / dias, scale=abs(media_mes / dias) * volatilidad, size=(dias, simulaciones))
                 mediana_mes = np.percentile(sim_mes.sum(axis=0), 50)
                 datos_futuros_linea.append(mediana_mes)
@@ -240,20 +220,38 @@ if archivo_cargado is not None:
             ventas_proyectadas_sim = np.random.normal(loc=venta_acumulada_kpi, scale=abs(venta_acumulada_kpi) * volatilidad, size=simulaciones)
             tit_graf = f"Proyección Mensual: Cierre de Periodo Anual ({escenario})"
 
-        p10 = np.percentile(ventas_proyectadas_sim, 10)
         p50 = np.percentile(ventas_proyectadas_sim, 50)
-        p90 = np.percentile(ventas_proyectadas_sim, 90)
+
+        # ── LÓGICA PARA KPIs DE MES ACTUAL Y DIFERENCIA ──
+        df_mensual = df.groupby(['Año', 'Mes'])['Valor'].sum().reset_index().sort_values(by=['Año', 'Mes'])
+        
+        if len(df_mensual) >= 1:
+            suma_mes_actual = df_mensual.iloc[-1]['Valor']
+        else:
+            suma_mes_actual = 0
+            
+        if len(df_mensual) >= 2:
+            suma_mes_anterior = df_mensual.iloc[-2]['Valor']
+        else:
+            suma_mes_anterior = 0
+            
+        diferencia_mes = suma_mes_actual - suma_mes_anterior
+        pct_diferencia = (diferencia_mes / abs(suma_mes_anterior)) * 100 if suma_mes_anterior != 0 else 0
+        
+        icono_tendencia = "📈" if diferencia_mes >= 0 else "📉"
+        color_tendencia = "#4fc3f7" if diferencia_mes >= 0 else "#e74c3c"
 
         st.write(f"**Análisis Activo:** {st.session_state.horizonte} bajo el modelo estructural **{escenario}**")
         m1, m2, m3, m4 = st.columns(4)
+        
         with m1:
             st.markdown(f'<div class="metric-card"><p class="metric-label">💰 ACUMULADO REAL</p><p class="metric-value">${venta_base_real:,.0f}</p><p class="metric-sub">Neto histórico filtrado</p></div>', unsafe_allow_html=True)
         with m2:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">📉 TOTAL CONSERVADOR (P10)</p><p class="metric-value">${p10:,.0f}</p><p class="metric-sub">Acumulado del periodo</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">📅 SUMA MES ACTUAL</p><p class="metric-value">${suma_mes_actual:,.0f}</p><p class="metric-sub">Último mes registrado</p></div>', unsafe_allow_html=True)
         with m3:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">🔮 TOTAL PROYECTADO (P50)</p><p class="metric-value" style="color:#4fc3f7;">${p50:,.0f}</p><p class="metric-sub">Acumulado del periodo</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">⚖️ VS MES ANTERIOR</p><p class="metric-value" style="color:{color_tendencia};">${diferencia_mes:,.0f}</p><p class="metric-sub">{icono_tendencia} {pct_diferencia:+.1f}% de variación</p></div>', unsafe_allow_html=True)
         with m4:
-            st.markdown(f'<div class="metric-card"><p class="metric-label">🚀 TOTAL OPTIMISTA (P90)</p><p class="metric-value">${p90:,.0f}</p><p class="metric-sub">Acumulado del periodo</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><p class="metric-label">🚀 ESTIMADO PROYECTADO</p><p class="metric-value">${p50:,.0f}</p><p class="metric-sub">Periodo: {st.session_state.horizonte}</p></div>', unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -327,7 +325,6 @@ if archivo_cargado is not None:
         ax.set_xticks(range(len(total_ticks)))
         ax.set_xticklabels(total_ticks, rotation=45, ha='right', fontsize=10)
         
-        # Ajuste para valores netos negativos o positivos
         margen_superior = max(max(valores_historicos + [0]), max(datos_futuros_linea + [0])) * 1.2
         margen_inferior = min(min(valores_historicos + [0]), min(datos_futuros_linea + [0])) * 1.2
         ax.set_ylim(bottom=margen_inferior, top=margen_superior)
@@ -340,17 +337,20 @@ if archivo_cargado is not None:
         st.markdown("<br>", unsafe_allow_html=True)
         st.write("#### 📅 Desglose de Matriz Proyectada (Mensual)")
         
+        p10_linea = np.array(datos_futuros_linea) * (1 - volatilidad)
+        p90_linea = np.array(datos_futuros_linea) * (1 + volatilidad)
+        
         df_matriz_proyeccion = pd.DataFrame({
             "Mes Estimado": eje_futuro,
             "Valor Esperado (P50)": datos_futuros_linea,
-            "Escenario Pesimista (P10)": np.array(datos_futuros_linea) * (1 - volatilidad),
-            "Escenario Optimista (P90)": np.array(datos_futuros_linea) * (1 + volatilidad)
+            "Escenario Estimado (P10)": p10_linea,
+            "Escenario Crecimiento (P90)": p90_linea
         })
         
         st.dataframe(df_matriz_proyeccion.style.format({
             "Valor Esperado (P50)": "${:,.2f}",
-            "Escenario Pesimista (P10)": "${:,.2f}",
-            "Escenario Optimista (P90)": "${:,.2f}"
+            "Escenario Estimado (P10)": "${:,.2f}",
+            "Escenario Crecimiento (P90)": "${:,.2f}"
         }), use_container_width=True)
 
         # ── 9. MATRIZ ABC Y RENDIMIENTO (Bancos y Cuentas) ───────────
@@ -360,7 +360,6 @@ if archivo_cargado is not None:
         with c_izq:
             st.write("### 🔲 Matriz ABC (Concentración por Cuenta)")
             df_clientes = df.groupby('Cuenta')['Valor'].sum().reset_index()
-            # Ordenar por el valor absoluto para clasificar la concentración adecuadamente
             df_clientes = df_clientes.sort_values(by='Valor', ascending=False, key=abs).reset_index(drop=True)
             
             total_cartera = abs(df_clientes['Valor']).sum()
@@ -439,10 +438,10 @@ if archivo_cargado is not None:
             story.append(Spacer(1, 15))
             
             datos_matriz = [
-                [Paragraph("<b>Indicador Estratégico</b>", estilo_cuerpo), Paragraph("<b>Monto Proyectado Total Periodo</b>", estilo_cuerpo)],
-                ["Escenario Mínimo Probable (P10)", f"${p10:,.2f}"],
-                ["Pronóstico Objetivo Central (P50)", f"${p50:,.2f}"],
-                ["Techo Máximo Estimado (P90)", f"${p90:,.2f}"]
+                [Paragraph("<b>Indicador Estratégico</b>", estilo_cuerpo), Paragraph("<b>Monto</b>", estilo_cuerpo)],
+                ["Suma Mes Actual Registrado", f"${suma_mes_actual:,.2f}"],
+                ["Diferencia vs Mes Anterior", f"${diferencia_mes:,.2f}"],
+                ["Estimado Proyectado a Futuro (P50)", f"${p50:,.2f}"]
             ]
             t_finan = Table(datos_matriz, colWidths=[250, 200])
             t_finan.setStyle(TableStyle([
